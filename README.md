@@ -22,6 +22,26 @@ Open http://localhost:8000
 
 Docker discovery mounts the host Docker socket and looks for containers whose image/name/labels mention WireMock, then probes `/__admin`. New containers are added; existing ones are updated if their URL changed. Startup also runs a discovery pass.
 
+## Publish image (Docker Hub)
+
+Auto-versions from [`VERSION`](VERSION) + git tags. **Default channel is alpha** (`X.Y.Z-alpha`). Pass `beta` or `release` to override. **Default is a dry-run preview**; pass `--push` to build and publish.
+
+```bash
+docker login
+
+./scripts/docker-publish.sh                 # preview next alpha  (e.g. 0.1.0-alpha)
+./scripts/docker-publish.sh --push          # publish alpha (+ :alpha)
+
+./scripts/docker-publish.sh beta            # preview 0.1.0-beta
+./scripts/docker-publish.sh beta --push
+
+./scripts/docker-publish.sh release         # preview what :latest will point to
+./scripts/docker-publish.sh release --push  # publish X.Y.Z (+ :latest)
+./scripts/docker-publish.sh release minor --push
+```
+
+Useful env vars: `DOCKER_IMAGE=user/name`, `PLATFORMS=linux/amd64,linux/arm64`, `SKIP_GIT_TAG=1`.
+
 ## Local development
 
 Postgres is only reachable inside Compose by default (no host port). For a split local setup:
