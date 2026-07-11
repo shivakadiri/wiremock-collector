@@ -21,10 +21,13 @@ export type CollectedRequest = {
   status: number | null;
   was_matched: boolean;
   stub_mapping_id: string | null;
+  stub_name?: string | null;
   logged_at: string | null;
   timing_total: number | null;
   payload: Record<string, unknown>;
   collected_at: string;
+  request_body_truncated?: boolean;
+  response_body_truncated?: boolean;
 };
 
 export type RequestList = {
@@ -106,6 +109,8 @@ export const api = {
     });
     return request<RequestList>(`/api/requests?${qs}`);
   },
+  getRequest: (id: number, full = true) =>
+    request<CollectedRequest>(`/api/requests/${id}?full=${full ? "true" : "false"}`),
   getStubs: (instanceId: number) =>
     request<{ mappings: Record<string, unknown>[] }>(`/api/instances/${instanceId}/stubs`),
   getScenarios: (instanceId: number) =>

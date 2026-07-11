@@ -18,11 +18,44 @@ from app.schemas import (
 )
 from app.services.collector import collect_all_enabled, collect_instance
 from app.services.discovery import sync_discovered_instances
+from app.services.payload_slim import extract_stub_name, strip_large_bodies
 from app.services.sql_query import run_readonly_query
 from app.services.wiremock_client import WireMockClient
 
 router = APIRouter(prefix="/api")
 
+
+def _request_out(row: CollectedRequest, *, full_payload: bool) -> RequestOut:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    stub_name = extract_stub_name(payload, row.stub_mapping_id)
+    if full_payload:
+        slim = payload
+        req_trunc = False
+        res_trunc = False
+    else:
+        slim = strip_large_bodies(payload)
+        req = slim.get("request") if isinstance(slim.get("request"), dict) else {}
+        res = slim.get("response") if isinstance(slim.get("response"), dict) else {}
+        req_trunc = bool(req.get("_bodyTruncated"))
+        res_trunc = bool(res.get("_bodyTruncated"))
+    return RequestOut(
+        id=row.id,
+        instance_id=row.instance_id,
+        wiremock_request_id=row.wiremock_request_id,
+        method=row.method,
+        url=row.url,
+        absolute_url=row.absolute_url,
+        status=row.status,
+        was_matched=row.was_matched,
+        stub_mapping_id=row.stub_mapping_id,
+        stub_name=stub_name,
+        logged_at=row.logged_at,
+        timing_total=row.timing_total,
+        payload=slim,
+        collected_at=row.collected_at,
+        request_body_truncated=req_trunc,
+        response_body_truncated=res_trunc,
+    )
 
 @router.get("/health")
 async def health() -> dict[str, str]:
@@ -157,7 +190,7 @@ async def list_requests(
     )
     rows = (await db.execute(list_stmt)).scalars().all()
     return RequestListOut(
-        items=[RequestOut.model_validate(r) for r in rows],
+        items=[_request_out(r, full_payload=False) for r in rows],
         total=total,
         limit=limit,
         offset=offset,
@@ -166,12 +199,15 @@ async def list_requests(
 
 
 @router.get("/requests/{request_id}", response_model=RequestOut)
-async def get_request(request_id: int, db: AsyncSession = Depends(get_db)) -> CollectedRequest:
+async def get_request(
+    request_id: int,
+    full: bool = Query(default=True, description="Include full bodies (default true)"),
+    db: AsyncSession = Depends(get_db),
+) -> RequestOut:
     row = await db.get(CollectedRequest, request_id)
     if not row:
         raise HTTPException(status_code=404, detail="Request not found")
-    return row
-
+    return _request_out(row, full_payload=full)
 
 @router.get("/instances/{instance_id}/stubs")
 async def get_stubs(instance_id: int, db: AsyncSession = Depends(get_db)) -> dict:

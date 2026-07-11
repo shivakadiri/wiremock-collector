@@ -40,10 +40,13 @@ class RequestOut(BaseModel):
     status: int | None
     was_matched: bool
     stub_mapping_id: str | None
+    stub_name: str | None = None
     logged_at: datetime | None
     timing_total: int | None
     payload: dict
     collected_at: datetime
+    request_body_truncated: bool = False
+    response_body_truncated: bool = False
 
     model_config = {"from_attributes": True}
 

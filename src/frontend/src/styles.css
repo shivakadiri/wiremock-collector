@@ -759,6 +759,30 @@ button.linkish:hover {
   margin: 0.4rem 0 0;
 }
 
+.truncated-fetch {
+  display: inline-block;
+  padding: 0.65rem 0.75rem;
+  border: 1px dashed var(--line);
+  border-radius: 0.55rem;
+  background: var(--bg-accent);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.85rem;
+  width: 100%;
+  text-align: left;
+}
+
+.truncated-fetch:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.stub-cell {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .array-embed-row td {
   background: rgba(255, 252, 246, 0.6);
   border-bottom: 1px solid var(--line);

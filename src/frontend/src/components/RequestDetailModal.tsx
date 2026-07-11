@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { CollectedRequest } from "../api";
+import { api, CollectedRequest } from "../api";
 import { DecodedBody, decodeWireMockBodyFull } from "../lib/bodyDecode";
 import BodyViewer from "./BodyViewer";
+import PropertyValueModal from "./PropertyValueModal";
 
 type Props = {
   request: CollectedRequest;
@@ -10,6 +11,7 @@ type Props = {
 };
 
 type MainTab = "bodies" | "raw";
+type BodyPart = "request" | "response";
 
 const emptyBody: DecodedBody = { text: "", bytes: null, contentType: "" };
 
@@ -27,11 +29,42 @@ function headersList(headers: unknown): [string, string][] {
   ]);
 }
 
-export default function RequestDetailModal({ request, instanceName, onClose }: Props) {
+function sectionTruncated(section: Record<string, unknown>, flag?: boolean): boolean {
+  return Boolean(flag || section._bodyTruncated);
+}
+
+function sectionSize(section: Record<string, unknown>): number | undefined {
+  const n = section._bodySize;
+  return typeof n === "number" ? n : undefined;
+}
+
+function stubLabel(request: CollectedRequest): string {
+  if (request.stub_name) return request.stub_name;
+  const stub = asRecord((request.payload ?? {}).stubMapping);
+  const meta = asRecord(stub.metadata);
+  const name = stub.name ?? meta.name ?? request.stub_mapping_id;
+  return name != null ? String(name) : "—";
+}
+
+export default function RequestDetailModal({ request: initial, instanceName, onClose }: Props) {
+  const [request, setRequest] = useState(initial);
   const [tab, setTab] = useState<MainTab>("bodies");
   const [reqBody, setReqBody] = useState<DecodedBody>(emptyBody);
   const [resBody, setResBody] = useState<DecodedBody>(emptyBody);
   const [bodyError, setBodyError] = useState<string | null>(null);
+  const [fetchingPart, setFetchingPart] = useState<BodyPart | null>(null);
+  const [fetchedModal, setFetchedModal] = useState<{ title: string; value: unknown } | null>(null);
+  const [rawLoaded, setRawLoaded] = useState(false);
+  const [rawFetching, setRawFetching] = useState(false);
+
+  useEffect(() => {
+    setRequest(initial);
+    setReqBody(emptyBody);
+    setResBody(emptyBody);
+    setFetchedModal(null);
+    setRawLoaded(false);
+    setBodyError(null);
+  }, [initial]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -51,22 +84,40 @@ export default function RequestDetailModal({ request, instanceName, onClose }: P
   const res = asRecord(payload.response);
   const reqHeaders = useMemo(() => headersList(req.headers), [req]);
   const resHeaders = useMemo(() => headersList(res.headers), [res]);
+  const reqTrunc = sectionTruncated(req, request.request_body_truncated);
+  const resTrunc = sectionTruncated(res, request.response_body_truncated);
+  const stub = stubLabel(request);
 
   useEffect(() => {
     let cancelled = false;
     setBodyError(null);
     const reqSection = asRecord((request.payload ?? {}).request);
     const resSection = asRecord((request.payload ?? {}).response);
+    const skipReq = sectionTruncated(reqSection, request.request_body_truncated);
+    const skipRes = sectionTruncated(resSection, request.response_body_truncated);
+
     (async () => {
       try {
-        const [rb, sb] = await Promise.all([
-          decodeWireMockBodyFull(reqSection),
-          decodeWireMockBodyFull(resSection),
-        ]);
-        if (!cancelled) {
-          setReqBody(rb);
-          setResBody(sb);
+        const tasks: Promise<void>[] = [];
+        if (!skipReq) {
+          tasks.push(
+            decodeWireMockBodyFull(reqSection).then((rb) => {
+              if (!cancelled) setReqBody(rb);
+            }),
+          );
+        } else if (!cancelled) {
+          setReqBody(emptyBody);
         }
+        if (!skipRes) {
+          tasks.push(
+            decodeWireMockBodyFull(resSection).then((sb) => {
+              if (!cancelled) setResBody(sb);
+            }),
+          );
+        } else if (!cancelled) {
+          setResBody(emptyBody);
+        }
+        await Promise.all(tasks);
       } catch (err) {
         if (!cancelled) setBodyError(err instanceof Error ? err.message : String(err));
       }
@@ -75,6 +126,47 @@ export default function RequestDetailModal({ request, instanceName, onClose }: P
       cancelled = true;
     };
   }, [request]);
+
+  async function fetchFullBody(part: BodyPart) {
+    setFetchingPart(part);
+    setBodyError(null);
+    try {
+      const full = await api.getRequest(request.id, true);
+      setRequest(full);
+      const section = asRecord((full.payload ?? {})[part]);
+      const decoded = await decodeWireMockBodyFull(section);
+      if (part === "request") setReqBody(decoded);
+      else setResBody(decoded);
+      setFetchedModal({
+        title: `${part} body`,
+        value: decoded.text || decoded.bytes,
+      });
+      setRawLoaded(true);
+    } catch (err) {
+      setBodyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFetchingPart(null);
+    }
+  }
+
+  async function ensureRawPayload() {
+    if (rawLoaded && !reqTrunc && !resTrunc) return;
+    if (!reqTrunc && !resTrunc) {
+      setRawLoaded(true);
+      return;
+    }
+    setRawFetching(true);
+    setBodyError(null);
+    try {
+      const full = await api.getRequest(request.id, true);
+      setRequest(full);
+      setRawLoaded(true);
+    } catch (err) {
+      setBodyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRawFetching(false);
+    }
+  }
 
   const when = request.logged_at ?? request.collected_at;
 
@@ -100,6 +192,11 @@ export default function RequestDetailModal({ request, instanceName, onClose }: P
               {" · "}
               {request.was_matched ? "matched" : "unmatched"}
               {" · "}
+              stub {stub}
+              {request.stub_mapping_id && stub !== request.stub_mapping_id
+                ? ` (${request.stub_mapping_id})`
+                : ""}
+              {" · "}
               {when ? new Date(when).toLocaleString() : "—"}
               {request.timing_total != null ? ` · ${request.timing_total} ms` : ""}
             </p>
@@ -120,7 +217,10 @@ export default function RequestDetailModal({ request, instanceName, onClose }: P
           <button
             type="button"
             className={`ghost compact ${tab === "raw" ? "active-format" : ""}`}
-            onClick={() => setTab("raw")}
+            onClick={() => {
+              setTab("raw");
+              void ensureRawPayload();
+            }}
           >
             Raw JSON
           </button>
@@ -163,6 +263,10 @@ export default function RequestDetailModal({ request, instanceName, onClose }: P
                   bytes={reqBody.bytes}
                   contentType={reqBody.contentType}
                   defaultFormat="json"
+                  truncated={reqTrunc}
+                  truncatedSize={sectionSize(req)}
+                  fetching={fetchingPart === "request"}
+                  onFetchClick={() => void fetchFullBody("request")}
                 />
               </section>
 
@@ -175,7 +279,12 @@ export default function RequestDetailModal({ request, instanceName, onClose }: P
                   </div>
                   <div>
                     <dt>Stub</dt>
-                    <dd className="mono">{request.stub_mapping_id ?? "—"}</dd>
+                    <dd className="mono" title={request.stub_mapping_id ?? undefined}>
+                      {stub}
+                      {request.stub_mapping_id && stub !== request.stub_mapping_id ? (
+                        <span className="muted small"> · {request.stub_mapping_id}</span>
+                      ) : null}
+                    </dd>
                   </div>
                 </dl>
                 {resHeaders.length > 0 && (
@@ -199,14 +308,34 @@ export default function RequestDetailModal({ request, instanceName, onClose }: P
                   bytes={resBody.bytes}
                   contentType={resBody.contentType}
                   defaultFormat="json"
+                  truncated={resTrunc}
+                  truncatedSize={sectionSize(res)}
+                  fetching={fetchingPart === "response"}
+                  onFetchClick={() => void fetchFullBody("response")}
                 />
               </section>
             </div>
+          ) : rawFetching ? (
+            <p className="muted">Loading full payload…</p>
           ) : (
             <pre className="json-body raw-json">{JSON.stringify(payload, null, 2)}</pre>
           )}
         </div>
       </div>
+
+      {fetchedModal && (
+        <PropertyValueModal
+          title={fetchedModal.title}
+          value={
+            typeof fetchedModal.value === "string"
+              ? fetchedModal.value
+              : fetchedModal.value instanceof Uint8Array
+                ? new TextDecoder().decode(fetchedModal.value)
+                : fetchedModal.value
+          }
+          onClose={() => setFetchedModal(null)}
+        />
+      )}
     </div>
   );
 }

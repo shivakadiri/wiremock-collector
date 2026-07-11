@@ -20,6 +20,11 @@ type Props = {
   bytes?: Uint8Array | null;
   contentType?: string;
   defaultFormat?: BodyFormat;
+  /** Large body omitted from list payload — click to fetch */
+  truncated?: boolean;
+  truncatedSize?: number;
+  fetching?: boolean;
+  onFetchClick?: () => void;
 };
 
 type Selection =
@@ -46,7 +51,17 @@ function listProperties(value: unknown, prefix = ""): { path: string; key: strin
   return [];
 }
 
-export default function BodyViewer({ label, raw, bytes, contentType = "", defaultFormat = "json" }: Props) {
+export default function BodyViewer({
+  label,
+  raw,
+  bytes,
+  contentType = "",
+  defaultFormat = "json",
+  truncated = false,
+  truncatedSize,
+  fetching = false,
+  onFetchClick,
+}: Props) {
   const [format, setFormat] = useState<BodyFormat>(defaultFormat);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -65,7 +80,7 @@ export default function BodyViewer({ label, raw, bytes, contentType = "", defaul
     !multipartParts && parsed !== null && typeof parsed === "object";
 
   const text = asString(raw);
-  const empty = !text && !multipartParts?.length;
+  const empty = !truncated && !text && !multipartParts?.length;
 
   const jsonView = useMemo(() => formatAsJson(raw), [raw]);
   const markdownHtml = useMemo(() => {
@@ -140,6 +155,26 @@ export default function BodyViewer({ label, raw, bytes, contentType = "", defaul
       }
     }
     return nodes;
+  }
+
+  if (truncated) {
+    const sizeLabel =
+      truncatedSize != null ? ` · ~${truncatedSize.toLocaleString()} bytes` : "";
+    return (
+      <div className="body-viewer">
+        <div className="body-viewer-header">
+          <strong>{label}</strong>
+        </div>
+        <button
+          type="button"
+          className="truncated-fetch linkish"
+          onClick={onFetchClick}
+          disabled={fetching || !onFetchClick}
+        >
+          {fetching ? "Fetching body…" : `[Truncated-Click to Fetch]${sizeLabel}`}
+        </button>
+      </div>
+    );
   }
 
   return (

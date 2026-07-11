@@ -144,6 +144,7 @@ export default function RequestsPage() {
               <th>Method</th>
               <th>URL</th>
               <th>Status</th>
+              <th>Stub</th>
               <th>Matched</th>
               <th>Timing</th>
             </tr>
@@ -163,6 +164,9 @@ export default function RequestsPage() {
                 </td>
                 <td className="mono url-cell">{r.url}</td>
                 <td>{r.status ?? "—"}</td>
+                <td className="mono stub-cell" title={r.stub_mapping_id ?? undefined}>
+                  {r.stub_name ?? r.stub_mapping_id ?? "—"}
+                </td>
                 <td>
                   <span className={`pill ${r.was_matched ? "ok" : "bad"}`}>
                     {r.was_matched ? "yes" : "no"}
@@ -175,7 +179,7 @@ export default function RequestsPage() {
             ))}
             {items.length === 0 && (
               <tr>
-                <td colSpan={7} className="muted">
+                <td colSpan={8} className="muted">
                   No requests yet. Add an instance and collect.
                 </td>
               </tr>
