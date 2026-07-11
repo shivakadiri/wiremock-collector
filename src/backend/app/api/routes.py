@@ -101,7 +101,12 @@ async def trigger_collect_one(instance_id: int, db: AsyncSession = Depends(get_d
     instance = await db.get(Instance, instance_id)
     if not instance:
         raise HTTPException(status_code=404, detail="Instance not found")
-    return await collect_instance(db, instance)
+    return await collect_instance(
+        db,
+        instance_id=instance.id,
+        instance_name=instance.name,
+        base_url=instance.base_url,
+    )
 
 
 @router.get("/requests", response_model=RequestListOut)

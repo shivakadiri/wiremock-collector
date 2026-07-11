@@ -5,6 +5,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import SessionLocal
 from app.models.instance import Instance
 from app.models.request import CollectedRequest
 from app.schemas import CollectResult
@@ -87,10 +88,14 @@ async def _mark_instance_error(session: AsyncSession, instance_id: int, error: s
     await session.commit()
 
 
-async def collect_instance(session: AsyncSession, instance: Instance) -> CollectResult:
-    instance_id = instance.id
-    instance_name = instance.name
-    base_url = instance.base_url
+async def collect_instance(
+    session: AsyncSession,
+    *,
+    instance_id: int,
+    instance_name: str,
+    base_url: str,
+) -> CollectResult:
+    """Collect journals for one instance using only primitives (no live ORM object)."""
     client = WireMockClient(base_url)
     try:
         raw_requests = await client.get_requests()
@@ -146,10 +151,23 @@ async def collect_instance(session: AsyncSession, instance: Instance) -> Collect
     )
 
 
-async def collect_all_enabled(session: AsyncSession) -> list[CollectResult]:
-    result = await session.execute(select(Instance).where(Instance.enabled.is_(True)))
-    instances = result.scalars().all()
+async def collect_all_enabled(_session: AsyncSession | None = None) -> list[CollectResult]:
+    """Collect from every enabled instance using a fresh session per instance."""
+    async with SessionLocal() as list_session:
+        result = await list_session.execute(
+            select(Instance.id, Instance.name, Instance.base_url).where(Instance.enabled.is_(True))
+        )
+        rows = list(result.all())
+
     results: list[CollectResult] = []
-    for instance in instances:
-        results.append(await collect_instance(session, instance))
+    for instance_id, instance_name, base_url in rows:
+        async with SessionLocal() as session:
+            results.append(
+                await collect_instance(
+                    session,
+                    instance_id=instance_id,
+                    instance_name=instance_name,
+                    base_url=base_url,
+                )
+            )
     return results

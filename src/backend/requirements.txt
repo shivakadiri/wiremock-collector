@@ -8,3 +8,4 @@ apscheduler==3.10.4
 pydantic==2.10.4
 pydantic-settings==2.7.0
 python-multipart==0.0.20
+greenlet==3.1.1
