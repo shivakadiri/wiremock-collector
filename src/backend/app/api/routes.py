@@ -6,6 +6,9 @@ from app.database import get_db
 from app.models.instance import Instance
 from app.models.request import CollectedRequest
 from app.schemas import (
+    AppSettingsOut,
+    AppSettingsUpdate,
+    ClearJournalResult,
     CollectResult,
     DiscoverResult,
     InstanceCreate,
@@ -17,7 +20,12 @@ from app.schemas import (
     RequestListOut,
     RequestOut,
 )
-from app.services.collector import collect_all_enabled, collect_instance
+from app.services.collector import (
+    clear_all_enabled_journals,
+    clear_instance_journal,
+    collect_all_enabled,
+    collect_instance,
+)
 from app.services.discovery import sync_discovered_instances
 from app.services.payload_slim import (
     extract_stub_name,
@@ -25,8 +33,13 @@ from app.services.payload_slim import (
     section_only,
     slim_payload_meta,
 )
+from app.services.runtime_settings import (
+    get_clear_journal_after_collect,
+    set_clear_journal_after_collect,
+)
 from app.services.sql_query import run_readonly_query
 from app.services.wiremock_client import WireMockClient
+from app.config import settings
 
 router = APIRouter(prefix="/api")
 
@@ -135,18 +148,65 @@ async def delete_instance(instance_id: int, db: AsyncSession = Depends(get_db)) 
     await db.commit()
 
 
+@router.get("/settings", response_model=AppSettingsOut)
+async def get_settings() -> AppSettingsOut:
+    return AppSettingsOut(
+        clear_journal_after_collect=get_clear_journal_after_collect(),
+        collect_interval_seconds=settings.collect_interval_seconds,
+    )
+
+
+@router.patch("/settings", response_model=AppSettingsOut)
+async def patch_settings(body: AppSettingsUpdate) -> AppSettingsOut:
+    if body.clear_journal_after_collect is not None:
+        set_clear_journal_after_collect(body.clear_journal_after_collect)
+    return AppSettingsOut(
+        clear_journal_after_collect=get_clear_journal_after_collect(),
+        collect_interval_seconds=settings.collect_interval_seconds,
+    )
+
+
 @router.post("/collect", response_model=list[CollectResult])
-async def trigger_collect(db: AsyncSession = Depends(get_db)) -> list[CollectResult]:
-    return await collect_all_enabled(db)
+async def trigger_collect(
+    clear_after: bool | None = Query(
+        default=None,
+        description="Clear WireMock journals after collect; omit to use app setting",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> list[CollectResult]:
+    return await collect_all_enabled(db, clear_after=clear_after)
 
 
 @router.post("/instances/{instance_id}/collect", response_model=CollectResult)
-async def trigger_collect_one(instance_id: int, db: AsyncSession = Depends(get_db)) -> CollectResult:
+async def trigger_collect_one(
+    instance_id: int,
+    clear_after: bool | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> CollectResult:
     instance = await db.get(Instance, instance_id)
     if not instance:
         raise HTTPException(status_code=404, detail="Instance not found")
     return await collect_instance(
         db,
+        instance_id=instance.id,
+        instance_name=instance.name,
+        base_url=instance.base_url,
+        clear_after=clear_after,
+    )
+
+
+@router.post("/clear-journals", response_model=list[ClearJournalResult])
+async def clear_journals() -> list[ClearJournalResult]:
+    """Clear request journals on all enabled WireMock instances (does not delete Postgres rows)."""
+    return await clear_all_enabled_journals()
+
+
+@router.post("/instances/{instance_id}/clear-journal", response_model=ClearJournalResult)
+async def clear_journal_one(instance_id: int, db: AsyncSession = Depends(get_db)) -> ClearJournalResult:
+    instance = await db.get(Instance, instance_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    return await clear_instance_journal(
         instance_id=instance.id,
         instance_name=instance.name,
         base_url=instance.base_url,

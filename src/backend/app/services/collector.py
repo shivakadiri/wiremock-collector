@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import SessionLocal
 from app.models.instance import Instance
 from app.models.request import CollectedRequest
-from app.schemas import CollectResult
+from app.schemas import ClearJournalResult, CollectResult
 from app.services.body_decode import normalize_journal_payload
 from app.services.wiremock_client import WireMockClient
 
@@ -94,8 +94,12 @@ async def collect_instance(
     instance_id: int,
     instance_name: str,
     base_url: str,
+    clear_after: bool | None = None,
 ) -> CollectResult:
     """Collect journals for one instance using only primitives (no live ORM object)."""
+    from app.services.runtime_settings import get_clear_journal_after_collect
+
+    do_clear = get_clear_journal_after_collect() if clear_after is None else clear_after
     client = WireMockClient(base_url)
     try:
         raw_requests = await client.get_requests()
@@ -143,15 +147,40 @@ async def collect_instance(
             error=str(exc),
         )
 
+    journal_cleared = False
+    if do_clear:
+        try:
+            await client.clear_requests()
+            journal_cleared = True
+        except Exception as exc:  # noqa: BLE001
+            await _mark_instance_error(
+                session,
+                instance_id,
+                f"Collected OK but failed to clear WireMock journal: {exc}",
+            )
+            return CollectResult(
+                instance_id=instance_id,
+                instance_name=instance_name,
+                fetched=len(raw_requests),
+                inserted=inserted,
+                error=f"clear journal failed: {exc}",
+                journal_cleared=False,
+            )
+
     return CollectResult(
         instance_id=instance_id,
         instance_name=instance_name,
         fetched=len(raw_requests),
         inserted=inserted,
+        journal_cleared=journal_cleared,
     )
 
 
-async def collect_all_enabled(_session: AsyncSession | None = None) -> list[CollectResult]:
+async def collect_all_enabled(
+    _session: AsyncSession | None = None,
+    *,
+    clear_after: bool | None = None,
+) -> list[CollectResult]:
     """Collect from every enabled instance using a fresh session per instance."""
     async with SessionLocal() as list_session:
         result = await list_session.execute(
@@ -168,6 +197,41 @@ async def collect_all_enabled(_session: AsyncSession | None = None) -> list[Coll
                     instance_id=instance_id,
                     instance_name=instance_name,
                     base_url=base_url,
+                    clear_after=clear_after,
                 )
             )
     return results
+
+
+async def clear_instance_journal(
+    *,
+    instance_id: int,
+    instance_name: str,
+    base_url: str,
+) -> ClearJournalResult:
+    client = WireMockClient(base_url)
+    try:
+        await client.clear_requests()
+        return ClearJournalResult(
+            instance_id=instance_id,
+            instance_name=instance_name,
+            cleared=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return ClearJournalResult(
+            instance_id=instance_id,
+            instance_name=instance_name,
+            cleared=False,
+            error=str(exc),
+        )
+
+
+async def clear_all_enabled_journals() -> list[ClearJournalResult]:
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Instance.id, Instance.name, Instance.base_url).where(Instance.enabled.is_(True))
+        )
+        rows = list(result.all())
+    return [
+        await clear_instance_journal(instance_id=i, instance_name=n, base_url=u) for i, n, u in rows
+    ]

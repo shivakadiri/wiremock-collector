@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     docker_socket: str = "/var/run/docker.sock"
     docker_host_gateway: str = "host.docker.internal"
     docker_auto_discover_on_startup: bool = True
+    clear_journal_after_collect: bool = False
 
 
 settings = Settings()

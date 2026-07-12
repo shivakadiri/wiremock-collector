@@ -19,12 +19,14 @@ export default function RequestsPage() {
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<CollectedRequest | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [autoClear, setAutoClear] = useState(false);
 
   const instanceMap = useMemo(() => new Map(instances.map((i) => [i.id, i.name])), [instances]);
 
   async function load() {
-    const [inst, reqs] = await Promise.all([
+    const [inst, reqs, settings] = await Promise.all([
       api.listInstances(),
       api.listRequests({
         instance_id: instanceId || undefined,
@@ -33,11 +35,13 @@ export default function RequestsPage() {
         q: q || undefined,
         limit: 50,
       }),
+      api.getSettings(),
     ]);
     setInstances(inst);
     setItems(reqs.items);
     setTotal(reqs.total);
     setMethodCounts(reqs.method_counts ?? {});
+    setAutoClear(settings.clear_journal_after_collect);
   }
 
   useEffect(() => {
@@ -53,12 +57,61 @@ export default function RequestsPage() {
     }
   }
 
+  async function onAutoClearChange(checked: boolean) {
+    setAutoClear(checked);
+    try {
+      await api.updateSettings({ clear_journal_after_collect: checked });
+    } catch (err) {
+      setAutoClear(!checked);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function collectNow() {
     setBusy(true);
     setError(null);
+    setInfo(null);
     try {
-      await api.collectAll();
+      const results = await api.collectAll(autoClear);
+      const fetched = results.reduce((n, r) => n + r.fetched, 0);
+      const inserted = results.reduce((n, r) => n + r.inserted, 0);
+      const cleared = results.filter((r) => r.journal_cleared).length;
+      const errors = results.filter((r) => r.error);
+      setInfo(
+        `Collected ${inserted} new / ${fetched} fetched` +
+          (autoClear ? ` · cleared ${cleared}/${results.length} WireMock journals` : "") +
+          (errors.length ? ` · ${errors.length} error(s)` : ""),
+      );
+      if (errors.length) {
+        setError(errors.map((e) => `${e.instance_name}: ${e.error}`).join("; "));
+      }
       await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearWireMockLogs() {
+    if (
+      !confirm(
+        "Clear request journals on all enabled WireMock instances?\n\nThis does not delete rows already stored in the collector database.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const results = await api.clearJournals();
+      const ok = results.filter((r) => r.cleared).length;
+      const failed = results.filter((r) => !r.cleared);
+      setInfo(`Cleared WireMock journals on ${ok}/${results.length} instance(s)`);
+      if (failed.length) {
+        setError(failed.map((f) => `${f.instance_name}: ${f.error}`).join("; "));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -71,9 +124,7 @@ export default function RequestsPage() {
       <div className="page-header row compact-header">
         <div>
           <h1>Requests</h1>
-          <p className="muted">
-            {total} stored · click a row for detail
-          </p>
+          <p className="muted">{total} stored · click a row for detail</p>
           {Object.keys(methodCounts).length > 0 && (
             <div className="method-counts">
               {Object.entries(methodCounts).map(([m, n]) => (
@@ -90,12 +141,27 @@ export default function RequestsPage() {
             </div>
           )}
         </div>
-        <button type="button" onClick={collectNow} disabled={busy}>
-          {busy ? "Collecting…" : "Collect now"}
-        </button>
+        <div className="header-actions">
+          <label className="checkbox-inline" title="Also used by the background collector">
+            <input
+              type="checkbox"
+              checked={autoClear}
+              onChange={(e) => void onAutoClearChange(e.target.checked)}
+              disabled={busy}
+            />
+            Auto-clear WireMock logs after collect
+          </label>
+          <button type="button" className="ghost" onClick={() => void clearWireMockLogs()} disabled={busy}>
+            Clear WireMock logs
+          </button>
+          <button type="button" onClick={() => void collectNow()} disabled={busy}>
+            {busy ? "Working…" : "Collect now"}
+          </button>
+        </div>
       </div>
 
       {error && <div className="banner error">{error}</div>}
+      {info && <div className="banner ok">{info}</div>}
 
       <form className="panel form-row compact-filters" onSubmit={onSearch}>
         <label>

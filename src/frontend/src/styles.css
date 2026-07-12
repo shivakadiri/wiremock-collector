@@ -97,6 +97,29 @@ nav a.active {
   margin-bottom: 0.65rem;
 }
 
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.checkbox-inline input {
+  accent-color: var(--brand);
+}
+
 .compact-filters {
   padding: 0.65rem 0.85rem;
   margin-bottom: 0.65rem;

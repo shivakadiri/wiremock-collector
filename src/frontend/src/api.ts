@@ -44,6 +44,19 @@ export type CollectResult = {
   fetched: number;
   inserted: number;
   error: string | null;
+  journal_cleared?: boolean;
+};
+
+export type ClearJournalResult = {
+  instance_id: number;
+  instance_name: string;
+  cleared: boolean;
+  error: string | null;
+};
+
+export type AppSettings = {
+  clear_journal_after_collect: boolean;
+  collect_interval_seconds: number;
 };
 
 export type DiscoveredInstance = {
@@ -100,8 +113,20 @@ export const api = {
     request<Instance>(`/api/instances/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteInstance: (id: number) => request<void>(`/api/instances/${id}`, { method: "DELETE" }),
   discoverInstances: () => request<DiscoverResult>("/api/instances/discover", { method: "POST" }),
-  collectAll: () => request<CollectResult[]>("/api/collect", { method: "POST" }),
-  collectOne: (id: number) => request<CollectResult>(`/api/instances/${id}/collect`, { method: "POST" }),
+  collectAll: (clearAfter?: boolean) => {
+    const qs = clearAfter === undefined ? "" : `?clear_after=${clearAfter ? "true" : "false"}`;
+    return request<CollectResult[]>(`/api/collect${qs}`, { method: "POST" });
+  },
+  collectOne: (id: number, clearAfter?: boolean) => {
+    const qs = clearAfter === undefined ? "" : `?clear_after=${clearAfter ? "true" : "false"}`;
+    return request<CollectResult>(`/api/instances/${id}/collect${qs}`, { method: "POST" });
+  },
+  clearJournals: () => request<ClearJournalResult[]>("/api/clear-journals", { method: "POST" }),
+  clearJournal: (id: number) =>
+    request<ClearJournalResult>(`/api/instances/${id}/clear-journal`, { method: "POST" }),
+  getSettings: () => request<AppSettings>("/api/settings"),
+  updateSettings: (body: Partial<AppSettings>) =>
+    request<AppSettings>("/api/settings", { method: "PATCH", body: JSON.stringify(body) }),
   listRequests: (params: Record<string, string | number | boolean | undefined>) => {
     const qs = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => {

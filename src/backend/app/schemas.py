@@ -71,6 +71,23 @@ class CollectResult(BaseModel):
     fetched: int
     inserted: int
     error: str | None = None
+    journal_cleared: bool = False
+
+
+class ClearJournalResult(BaseModel):
+    instance_id: int
+    instance_name: str
+    cleared: bool
+    error: str | None = None
+
+
+class AppSettingsOut(BaseModel):
+    clear_journal_after_collect: bool
+    collect_interval_seconds: int
+
+
+class AppSettingsUpdate(BaseModel):
+    clear_journal_after_collect: bool | None = None
 
 
 class DiscoveredInstanceOut(BaseModel):

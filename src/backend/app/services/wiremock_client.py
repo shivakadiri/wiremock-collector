@@ -31,3 +31,9 @@ class WireMockClient:
             response.raise_for_status()
             data = response.json()
             return data.get("scenarios", [])
+
+    async def clear_requests(self) -> None:
+        """Clear the WireMock request journal (DELETE /__admin/requests)."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.delete(self._url("/__admin/requests"))
+            response.raise_for_status()
