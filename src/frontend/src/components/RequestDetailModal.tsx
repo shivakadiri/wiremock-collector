@@ -48,23 +48,51 @@ function stubLabel(request: CollectedRequest): string {
 
 export default function RequestDetailModal({ request: initial, instanceName, onClose }: Props) {
   const [request, setRequest] = useState(initial);
+  const [metaLoading, setMetaLoading] = useState(true);
   const [tab, setTab] = useState<MainTab>("bodies");
   const [reqBody, setReqBody] = useState<DecodedBody>(emptyBody);
   const [resBody, setResBody] = useState<DecodedBody>(emptyBody);
+  const [reqLoaded, setReqLoaded] = useState(false);
+  const [resLoaded, setResLoaded] = useState(false);
   const [bodyError, setBodyError] = useState<string | null>(null);
   const [fetchingPart, setFetchingPart] = useState<BodyPart | null>(null);
   const [fetchedModal, setFetchedModal] = useState<{ title: string; value: unknown } | null>(null);
-  const [rawLoaded, setRawLoaded] = useState(false);
+  const [rawText, setRawText] = useState<string | null>(null);
   const [rawFetching, setRawFetching] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     setRequest(initial);
     setReqBody(emptyBody);
     setResBody(emptyBody);
+    setReqLoaded(false);
+    setResLoaded(false);
     setFetchedModal(null);
-    setRawLoaded(false);
+    setRawText(null);
     setBodyError(null);
-  }, [initial]);
+    setMetaLoading(true);
+    setTab("bodies");
+
+    (async () => {
+      try {
+        // Headers/meta only — never pull bodies on open
+        const meta = await api.getRequest(initial.id, false);
+        if (!cancelled) {
+          setRequest(meta);
+          setMetaLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setBodyError(err instanceof Error ? err.message : String(err));
+          setMetaLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [initial.id]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -84,64 +112,30 @@ export default function RequestDetailModal({ request: initial, instanceName, onC
   const res = asRecord(payload.response);
   const reqHeaders = useMemo(() => headersList(req.headers), [req]);
   const resHeaders = useMemo(() => headersList(res.headers), [res]);
-  const reqTrunc = sectionTruncated(req, request.request_body_truncated);
-  const resTrunc = sectionTruncated(res, request.response_body_truncated);
+  const reqTrunc = !reqLoaded && sectionTruncated(req, request.request_body_truncated);
+  const resTrunc = !resLoaded && sectionTruncated(res, request.response_body_truncated);
+  // Empty bodies: no truncated chip if size is 0
+  const reqNeedsFetch = !reqLoaded && (request.request_body_truncated || Boolean(req._bodyTruncated));
+  const resNeedsFetch = !resLoaded && (request.response_body_truncated || Boolean(res._bodyTruncated));
   const stub = stubLabel(request);
-
-  useEffect(() => {
-    let cancelled = false;
-    setBodyError(null);
-    const reqSection = asRecord((request.payload ?? {}).request);
-    const resSection = asRecord((request.payload ?? {}).response);
-    const skipReq = sectionTruncated(reqSection, request.request_body_truncated);
-    const skipRes = sectionTruncated(resSection, request.response_body_truncated);
-
-    (async () => {
-      try {
-        const tasks: Promise<void>[] = [];
-        if (!skipReq) {
-          tasks.push(
-            decodeWireMockBodyFull(reqSection).then((rb) => {
-              if (!cancelled) setReqBody(rb);
-            }),
-          );
-        } else if (!cancelled) {
-          setReqBody(emptyBody);
-        }
-        if (!skipRes) {
-          tasks.push(
-            decodeWireMockBodyFull(resSection).then((sb) => {
-              if (!cancelled) setResBody(sb);
-            }),
-          );
-        } else if (!cancelled) {
-          setResBody(emptyBody);
-        }
-        await Promise.all(tasks);
-      } catch (err) {
-        if (!cancelled) setBodyError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [request]);
 
   async function fetchFullBody(part: BodyPart) {
     setFetchingPart(part);
     setBodyError(null);
     try {
-      const full = await api.getRequest(request.id, true);
-      setRequest(full);
-      const section = asRecord((full.payload ?? {})[part]);
+      const { section } = await api.getRequestBody(request.id, part);
       const decoded = await decodeWireMockBodyFull(section);
-      if (part === "request") setReqBody(decoded);
-      else setResBody(decoded);
+      if (part === "request") {
+        setReqBody(decoded);
+        setReqLoaded(true);
+      } else {
+        setResBody(decoded);
+        setResLoaded(true);
+      }
       setFetchedModal({
         title: `${part} body`,
-        value: decoded.text || decoded.bytes,
+        value: decoded.text || (decoded.bytes ? new TextDecoder().decode(decoded.bytes) : ""),
       });
-      setRawLoaded(true);
     } catch (err) {
       setBodyError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -150,17 +144,12 @@ export default function RequestDetailModal({ request: initial, instanceName, onC
   }
 
   async function ensureRawPayload() {
-    if (rawLoaded && !reqTrunc && !resTrunc) return;
-    if (!reqTrunc && !resTrunc) {
-      setRawLoaded(true);
-      return;
-    }
+    if (rawText != null) return;
     setRawFetching(true);
     setBodyError(null);
     try {
       const full = await api.getRequest(request.id, true);
-      setRequest(full);
-      setRawLoaded(true);
+      setRawText(JSON.stringify(full.payload ?? {}, null, 2));
     } catch (err) {
       setBodyError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -228,7 +217,9 @@ export default function RequestDetailModal({ request: initial, instanceName, onC
 
         <div className="modal-body">
           {bodyError && <div className="banner error">{bodyError}</div>}
-          {tab === "bodies" ? (
+          {metaLoading ? (
+            <p className="muted">Loading request…</p>
+          ) : tab === "bodies" ? (
             <div className="bodies-grid">
               <section className="body-card">
                 <h3>Request</h3>
@@ -263,7 +254,7 @@ export default function RequestDetailModal({ request: initial, instanceName, onC
                   bytes={reqBody.bytes}
                   contentType={reqBody.contentType}
                   defaultFormat="json"
-                  truncated={reqTrunc}
+                  truncated={reqNeedsFetch || reqTrunc}
                   truncatedSize={sectionSize(req)}
                   fetching={fetchingPart === "request"}
                   onFetchClick={() => void fetchFullBody("request")}
@@ -308,7 +299,7 @@ export default function RequestDetailModal({ request: initial, instanceName, onC
                   bytes={resBody.bytes}
                   contentType={resBody.contentType}
                   defaultFormat="json"
-                  truncated={resTrunc}
+                  truncated={resNeedsFetch || resTrunc}
                   truncatedSize={sectionSize(res)}
                   fetching={fetchingPart === "response"}
                   onFetchClick={() => void fetchFullBody("response")}
@@ -318,7 +309,7 @@ export default function RequestDetailModal({ request: initial, instanceName, onC
           ) : rawFetching ? (
             <p className="muted">Loading full payload…</p>
           ) : (
-            <pre className="json-body raw-json">{JSON.stringify(payload, null, 2)}</pre>
+            <pre className="json-body raw-json">{rawText ?? ""}</pre>
           )}
         </div>
       </div>
@@ -326,13 +317,7 @@ export default function RequestDetailModal({ request: initial, instanceName, onC
       {fetchedModal && (
         <PropertyValueModal
           title={fetchedModal.title}
-          value={
-            typeof fetchedModal.value === "string"
-              ? fetchedModal.value
-              : fetchedModal.value instanceof Uint8Array
-                ? new TextDecoder().decode(fetchedModal.value)
-                : fetchedModal.value
-          }
+          value={fetchedModal.value}
           onClose={() => setFetchedModal(null)}
         />
       )}

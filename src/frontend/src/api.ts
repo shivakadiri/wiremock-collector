@@ -109,8 +109,12 @@ export const api = {
     });
     return request<RequestList>(`/api/requests?${qs}`);
   },
-  getRequest: (id: number, full = true) =>
+  getRequest: (id: number, full = false) =>
     request<CollectedRequest>(`/api/requests/${id}?full=${full ? "true" : "false"}`),
+  getRequestBody: (id: number, part: "request" | "response") =>
+    request<{ id: number; part: string; section: Record<string, unknown> }>(
+      `/api/requests/${id}/body?part=${part}`,
+    ),
   getStubs: (instanceId: number) =>
     request<{ mappings: Record<string, unknown>[] }>(`/api/instances/${instanceId}/stubs`),
   getScenarios: (instanceId: number) =>

@@ -51,6 +51,12 @@ class RequestOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RequestBodyOut(BaseModel):
+    id: int
+    part: str
+    section: dict
+
+
 class RequestListOut(BaseModel):
     items: list[RequestOut]
     total: int

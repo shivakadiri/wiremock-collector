@@ -13,16 +13,27 @@ from app.schemas import (
     InstanceUpdate,
     QueryRequest,
     QueryResult,
+    RequestBodyOut,
     RequestListOut,
     RequestOut,
 )
 from app.services.collector import collect_all_enabled, collect_instance
 from app.services.discovery import sync_discovered_instances
-from app.services.payload_slim import extract_stub_name, strip_large_bodies
+from app.services.payload_slim import (
+    extract_stub_name,
+    list_payload_stub,
+    section_only,
+    slim_payload_meta,
+)
 from app.services.sql_query import run_readonly_query
 from app.services.wiremock_client import WireMockClient
 
 router = APIRouter(prefix="/api")
+
+
+def _json_text(*path: str):
+    """Extract nested JSONB text without loading the full document into the ORM."""
+    return func.jsonb_extract_path_text(CollectedRequest.payload, *path)
 
 
 def _request_out(row: CollectedRequest, *, full_payload: bool) -> RequestOut:
@@ -33,7 +44,7 @@ def _request_out(row: CollectedRequest, *, full_payload: bool) -> RequestOut:
         req_trunc = False
         res_trunc = False
     else:
-        slim = strip_large_bodies(payload)
+        slim = slim_payload_meta(payload, keep_headers=True)
         req = slim.get("request") if isinstance(slim.get("request"), dict) else {}
         res = slim.get("response") if isinstance(slim.get("response"), dict) else {}
         req_trunc = bool(req.get("_bodyTruncated"))
@@ -148,7 +159,7 @@ async def list_requests(
     method: str | None = None,
     matched: bool | None = None,
     q: str | None = None,
-    limit: int = Query(default=50, ge=1, le=500),
+    limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> RequestListOut:
@@ -168,11 +179,9 @@ async def list_requests(
         base_filters.append(CollectedRequest.url.ilike(f"%{q}%"))
 
     count_stmt = select(func.count()).select_from(CollectedRequest)
-    list_stmt = select(CollectedRequest)
     method_stmt = select(CollectedRequest.method, func.count()).select_from(CollectedRequest)
     if filters:
         count_stmt = count_stmt.where(*filters)
-        list_stmt = list_stmt.where(*filters)
     if base_filters:
         method_stmt = method_stmt.where(*base_filters)
     method_stmt = method_stmt.group_by(CollectedRequest.method).order_by(func.count().desc())
@@ -180,6 +189,41 @@ async def list_requests(
     total = (await db.execute(count_stmt)).scalar_one()
     method_rows = (await db.execute(method_stmt)).all()
     method_counts = {str(m): int(c) for m, c in method_rows if m}
+
+    # Never load full JSONB payload for the list — only indexed cols + cheap JSON path sizes.
+    stub_name_expr = func.coalesce(
+        _json_text("stubMapping", "name"),
+        _json_text("stubMapping", "metadata", "name"),
+        CollectedRequest.stub_mapping_id,
+    )
+    req_size_expr = func.greatest(
+        func.coalesce(func.length(_json_text("request", "bodyAsBase64")), 0),
+        func.coalesce(func.length(_json_text("request", "body")), 0),
+    )
+    res_size_expr = func.greatest(
+        func.coalesce(func.length(_json_text("response", "bodyAsBase64")), 0),
+        func.coalesce(func.length(_json_text("response", "body")), 0),
+    )
+
+    list_stmt = select(
+        CollectedRequest.id,
+        CollectedRequest.instance_id,
+        CollectedRequest.wiremock_request_id,
+        CollectedRequest.method,
+        CollectedRequest.url,
+        CollectedRequest.absolute_url,
+        CollectedRequest.status,
+        CollectedRequest.was_matched,
+        CollectedRequest.stub_mapping_id,
+        CollectedRequest.logged_at,
+        CollectedRequest.timing_total,
+        CollectedRequest.collected_at,
+        stub_name_expr.label("stub_name"),
+        req_size_expr.label("req_size"),
+        res_size_expr.label("res_size"),
+    )
+    if filters:
+        list_stmt = list_stmt.where(*filters)
     list_stmt = (
         list_stmt.order_by(
             func.coalesce(CollectedRequest.logged_at, CollectedRequest.collected_at).desc(),
@@ -188,9 +232,39 @@ async def list_requests(
         .limit(limit)
         .offset(offset)
     )
-    rows = (await db.execute(list_stmt)).scalars().all()
+    rows = (await db.execute(list_stmt)).all()
+    items: list[RequestOut] = []
+    for row in rows:
+        req_size = int(row.req_size or 0)
+        res_size = int(row.res_size or 0)
+        stub_name = row.stub_name
+        items.append(
+            RequestOut(
+                id=row.id,
+                instance_id=row.instance_id,
+                wiremock_request_id=row.wiremock_request_id,
+                method=row.method,
+                url=row.url,
+                absolute_url=row.absolute_url,
+                status=row.status,
+                was_matched=row.was_matched,
+                stub_mapping_id=row.stub_mapping_id,
+                stub_name=stub_name,
+                logged_at=row.logged_at,
+                timing_total=row.timing_total,
+                payload=list_payload_stub(
+                    stub_name=stub_name,
+                    stub_mapping_id=row.stub_mapping_id,
+                    req_size=req_size,
+                    res_size=res_size,
+                ),
+                collected_at=row.collected_at,
+                request_body_truncated=req_size > 0,
+                response_body_truncated=res_size > 0,
+            )
+        )
     return RequestListOut(
-        items=[_request_out(r, full_payload=False) for r in rows],
+        items=items,
         total=total,
         limit=limit,
         offset=offset,
@@ -201,13 +275,30 @@ async def list_requests(
 @router.get("/requests/{request_id}", response_model=RequestOut)
 async def get_request(
     request_id: int,
-    full: bool = Query(default=True, description="Include full bodies (default true)"),
+    full: bool = Query(
+        default=False,
+        description="If true, include full bodies; default is headers/meta only",
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> RequestOut:
     row = await db.get(CollectedRequest, request_id)
     if not row:
         raise HTTPException(status_code=404, detail="Request not found")
     return _request_out(row, full_payload=full)
+
+
+@router.get("/requests/{request_id}/body", response_model=RequestBodyOut)
+async def get_request_body(
+    request_id: int,
+    part: str = Query(..., pattern="^(request|response)$"),
+    db: AsyncSession = Depends(get_db),
+) -> RequestBodyOut:
+    """Fetch a single HTTP section (with body) — avoids loading both huge sides into the UI."""
+    row = await db.get(CollectedRequest, request_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Request not found")
+    section = section_only(row.payload if isinstance(row.payload, dict) else {}, part)
+    return RequestBodyOut(id=request_id, part=part, section=section)
 
 @router.get("/instances/{instance_id}/stubs")
 async def get_stubs(instance_id: int, db: AsyncSession = Depends(get_db)) -> dict:

@@ -31,7 +31,7 @@ export default function RequestsPage() {
         method: method || undefined,
         matched: matched === "" ? undefined : matched === "true",
         q: q || undefined,
-        limit: 200,
+        limit: 50,
       }),
     ]);
     setInstances(inst);
